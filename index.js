@@ -15,6 +15,9 @@ app.use(
 );
 
 const port = process.env.PORT || 3000;
+const callApiUrl =
+  process.env.CALL_API_URL ||
+  "https://e-tongue-call-bot.onrender.com/make-outbound-call";
 
 // ✅ Health check route
 app.get("/health", (req, res) => {
@@ -52,9 +55,15 @@ app.get("/test", async (req, res) => {
 
 // ✅ Outbound call proxy route
 app.post("/call", async (req, res) => {
-  const { to } = req.body;
+  const to = typeof req.body?.to === "string" ? req.body.to.trim() : "";
   if (!to) {
     return res.status(400).json({ message: "Missing 'to' field in request body" });
+  }
+
+  if (!/^\+[1-9]\d{7,14}$/.test(to)) {
+    return res.status(400).json({
+      message: "'to' must be a valid international phone number, for example +14155552671",
+    });
   }
 
   console.log("☎️ Forwarding call to:", to);
@@ -62,7 +71,7 @@ app.post("/call", async (req, res) => {
   try {
     console.log("📡 Sending request to remote API...");
     const response = await axios.post(
-      "https://e-tongue-call-bot.onrender.com/make-outbound-call",
+      callApiUrl,
       { to },
       {
         headers: {
@@ -78,6 +87,11 @@ app.post("/call", async (req, res) => {
 
     if (response.status >= 200 && response.status < 300) {
       res.json(response.data);
+    } else if (response.status >= 500) {
+      res.status(502).json({
+        message: "The upstream call service failed to initiate the call",
+        upstreamStatus: response.status,
+      });
     } else {
       res.status(response.status).json({
         message: "Remote API returned an error",
@@ -88,15 +102,18 @@ app.post("/call", async (req, res) => {
   } catch (error) {
     if (error.response) {
       console.error("❌ API error:", error.response.status, error.response.data);
-      res.status(error.response.status).json({
-        message: "Upstream API error",
+      res.status(error.response.status >= 500 ? 502 : error.response.status).json({
+        message:
+          error.response.status >= 500
+            ? "The upstream call service failed to initiate the call"
+            : "Upstream API error",
         status: error.response.status,
         data: error.response.data,
       });
     } else {
       console.error("❌ Network error:", error.message);
-      res.status(500).json({
-        message: "Network or CORS issue contacting remote API",
+      res.status(502).json({
+        message: "Unable to reach the upstream call service",
         error: error.message,
       });
     }
