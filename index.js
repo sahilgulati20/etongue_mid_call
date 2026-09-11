@@ -21,6 +21,12 @@ app.get("/health", (req, res) => {
   res.status(200).send("OK");
 });
 
+app.get("/call", (req, res) => {
+  res.status(405).json({
+    message: "The /call endpoint requires a POST request with a JSON body containing 'to'.",
+  });
+});
+
 // ✅ Direct connectivity test
 app.get("/test", async (req, res) => {
   try {
