@@ -16,6 +16,53 @@ app.use(
 
 const port = process.env.PORT || 3000;
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Render's free tier puts an idle service to sleep; the request that wakes it
+// back up can bounce off as a timeout, 404 (route not registered yet), or 429
+// (Too Many Requests while it's still booting). Retry through those instead
+// of surfacing them straight to the caller.
+const RETRYABLE_STATUSES = new Set([404, 429, 502, 503, 504]);
+
+async function postToCallBotWithRetry(to, { attempts = 4, timeoutMs = 20000, delaysMs = [3000, 6000, 12000] } = {}) {
+  let lastError = null;
+  let lastResponse = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await axios.post(
+        "https://e-tongue-call-bot.onrender.com/make-outbound-call",
+        { to },
+        {
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          timeout: timeoutMs,
+          validateStatus: () => true,
+        }
+      );
+
+      if (response.status < 300 || !RETRYABLE_STATUSES.has(response.status)) {
+        return response;
+      }
+
+      console.warn(`⚠️ Attempt ${attempt}/${attempts} got retryable status ${response.status}, will retry...`);
+      lastResponse = response;
+    } catch (error) {
+      console.warn(`⚠️ Attempt ${attempt}/${attempts} failed: ${error.message}, will retry...`);
+      lastError = error;
+    }
+
+    if (attempt < attempts) {
+      await sleep(delaysMs[Math.min(attempt - 1, delaysMs.length - 1)]);
+    }
+  }
+
+  if (lastResponse) return lastResponse;
+  throw lastError;
+}
+
 // ✅ Health check route
 app.get("/health", (req, res) => {
   res.status(200).send("OK");
@@ -24,7 +71,7 @@ app.get("/health", (req, res) => {
 // ✅ Direct connectivity test
 app.get("/test", async (req, res) => {
   try {
-    const r = await axios.get("https://e-tongue-call-bot.onrender.com/health", {
+    const r = await axios.get("https://e-tongue-call-bot.onrender.com/", {
       timeout: 10000,
     });
     res.json({
@@ -55,18 +102,7 @@ app.post("/call", async (req, res) => {
 
   try {
     console.log("📡 Sending request to remote API...");
-    const response = await axios.post(
-      "https://e-tongue-call-bot.onrender.com/make-outbound-call",
-      { to },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        timeout: 15000,
-        validateStatus: () => true,
-      }
-    );
+    const response = await postToCallBotWithRetry(to);
 
     console.log("✅ Remote response:", response.status, response.data);
 
